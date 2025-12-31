@@ -1,12 +1,11 @@
 name: build
 on:
   schedule:
-    - cron: "30 00 * * *"
+    - cron: "30 00 * * 3"
   push:
     branches:
       - main
     paths-ignore:
-      - "docs/**"
       - "**.md"
   workflow_dispatch:
 
@@ -18,83 +17,56 @@ jobs:
     name: Get Fedora CoreOS Version
     runs-on: ubuntu-latest
     outputs:
-      stable_linux: ${{ steps.stable.outputs.linux }}
       stable_version: ${{ steps.stable.outputs.version }}
     steps:
       - name: Fetch CoreOS stable versions
         id: stable
         run: |
-          skopeo inspect docker://quay.io/fedora/fedora-coreos:stable > inspect.json
-          linux=$(jq -r '.["Labels"]["ostree.linux"]' inspect.json)
-          echo "linux=$linux" >> $GITHUB_OUTPUT
-          version=$(jq -r '.["Labels"]["org.opencontainers.image.version"]' inspect.json)
+          set -xeuo pipefail
+
+          # Get version for container image
+          version=$(skopeo inspect docker://quay.io/fedora/fedora-coreos:stable | \
+            jq -r '.Labels["org.opencontainers.image.version"]')
           echo "version=$version" >> $GITHUB_OUTPUT
+
       - name: Echo outputs
         run: |
           echo "${{ toJSON(steps.stable.outputs) }}"
 
-  json_files:
-    name: Generate Build Environments
-    runs-on: ubuntu-latest
-    outputs:
-      files: ${{ steps.json.outputs.files }}
-      tag: ${{ steps.json.outputs.tag }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Find JSON files
-        id: json
-        run: |
-          pushd .config
-          echo "files=$(ls | jq -R -s -c 'split("\n")[:-1]')" >> $GITHUB_OUTPUT
-          popd
-      - run: |
-          echo "${{ steps.json.outputs.files }}"
-
   build:
     name: Build and push image
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     if: always() && !cancelled()
-    needs: [fcos_version, json_files]
+    needs: [fcos_version]
     permissions:
       contents: read
       packages: write
       id-token: write
-    strategy:
-      fail-fast: false
-      matrix:
-        image_name:
-          - automatos-server
-        environment: ${{ fromJSON(needs.json_files.outputs.files) }}
-        include:
-          - image_version: ${{ needs.fcos_version.outputs.stable_version }}
     steps:
       - name: Checkout Push to Registry action
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Gather base tag for image
-        id: gather-base-tag
-        shell: bash
-        run: |
-          BASE_TAG="$(jq -r '.tag' .config/${{ matrix.environment }})"
-          if [ "$BASE_TAG" = "null" ]; then
-            BASE_TAG="stable-zfs"
-          fi
-          echo "BASE_TAG=$BASE_TAG" >> $GITHUB_OUTPUT
-
       - name: Generate image tags
         id: generate-image-tags
         shell: bash
         run: |
-          BRANCH="${{ github.ref_name }}"
+          set -xeuo pipefail
+
+          # Get current date for tags
           TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
           DATE="$(echo ${TIMESTAMP} | cut -d '-' -f 1)"
           echo "DATE=$DATE" >> $GITHUB_ENV
-          MAJOR_VERSION="$(echo ${{ matrix.image_version }} | cut -d '.' -f 1)"
+
+          # Get major version for container image
+          MAJOR_VERSION="$(echo ${{ needs.fcos_version.outputs.stable_version }} | cut -d '.' -f 1)"
           echo "MAJOR_VERSION=$MAJOR_VERSION" >> $GITHUB_ENV
+
+          # Define tags for container image
+          BRANCH="${{ github.ref_name }}"
           if [ "$BRANCH" = "main" ]; then
-            BUILD_TAGS=( "latest" "${BRANCH}" "${TIMESTAMP}" "${MAJOR_VERSION}.${DATE}")
+            BUILD_TAGS=( "latest" "${BRANCH}" "${TIMESTAMP}" "${MAJOR_VERSION}" "${MAJOR_VERSION}.${DATE}")
           else
             BUILD_TAGS=( "${BRANCH}" "${TIMESTAMP}" "${MAJOR_VERSION}.${DATE}")
           fi
@@ -105,13 +77,52 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ matrix.image_name }}-${{ matrix.environment }}
+            ${{ github.event.repository.name }}
           labels: |
-            io.artifacthub.package.readme-url=https://raw.githubusercontent.com/cubt85iz/automatos-server/main/README.md
-            org.opencontainers.image.description=A ucore-derived image with ZFS and container quadlets
-            org.opencontainers.image.source="https://github.com/cubt85iz/automatos-server-base"
-            org.opencontainers.image.title=${{ matrix.image_name }}-${{ matrix.environment }}
+            io.artifacthub.package.readme-url=https://raw.githubusercontent.com/cubt85iz/${{ github.event.repository.name }}/main/README.md
+            org.opencontainers.image.description=An image derived from Fedora CoreOS with configuration for nnk.
+            org.opencontainers.image.source="https://github.com/cubt85iz/${{ github.event.repository.name }}"
+            org.opencontainers.image.title=${{ github.event.repository.name }}
             org.opencontainers.image.version=${{ env.MAJOR_VERSION }}.${{ env.DATE }}
+
+      - name: Gather arguments
+        id: gather-arguments
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          get-argument() {
+            var_value=$(jq -r ".arguments.$1 // empty" .config/nnk)
+            if [ -n "$var_value" ]; then
+              echo "$var_value"
+            fi
+          }
+
+          # Gather arguments from configuration
+          CONFIG=$(get-argument CONFIG)
+          DEBUG=$(get-argument DEBUG)
+          KERNEL_FLAVOR=$(get-argument KERNEL_FLAVOR)
+          NVIDIA_TAG=$(get-argument NVIDIA_TAG)
+          ROOT=$(get-argument ROOT)
+
+          # Defaults for unspecified values.
+          DEBUG=${DEBUG:-false}
+          NVIDIA_TAG=${NVIDIA_TAG:-}
+          KERNEL_FLAVOR=${KERNEL_FLAVOR:-}
+          ROOT=${ROOT:-automatos-server}
+
+          # Exit with an error if CONFIG is unspecified
+          if [ -z "$CONFIG"]; then
+            echo "ERROR: Value for CONFIG must be provided."
+            exit 1
+          fi
+
+          # Add to environment variables
+          echo "CONFIG=$CONFIG" >> $GITHUB_ENV          
+          echo "DEBUG=$DEBUG" >> $GITHUB_ENV          
+          echo "KERNEL_FLAVOR=$KERNEL_FLAVOR" >> $GITHUB_ENV          
+          echo "NVIDIA_TAG=$NVIDIA_TAG" >> $GITHUB_ENV          
+          echo "ROOT=$ROOT" >> $GITHUB_ENV          
 
       - name: Build Image
         id: build_image
@@ -120,23 +131,17 @@ jobs:
           containerfiles: |
             ./core/Containerfile
           context: .
-          image: ${{ matrix.image_name }}-${{ matrix.environment }}
+          image: ${{ github.event.repository.name }}
           tags: |
             ${{ steps.generate-image-tags.outputs.alias_tags }}
           extra-args: |
-            --build-arg=BASE_TAG=${{ steps.gather-base-tag.outputs.BASE_TAG }}
-            --build-arg=CONFIG=${{ matrix.environment }}
-            --build-arg=ROOT=core
+            --build-arg=CONFIG=${{ env.CONFIG }}
+            --build-arg=DEBUG=${{ env.DEBUG }}
+            --build-arg=KERNEL_FLAVOR=${{ env.KERNEL_FLAVOR }}
+            --build-arg=NVIDIA_TAG=${{ env.NVIDIA_TAG }}
+            --build-arg=ROOT=${{ env.ROOT }}
           labels: ${{ steps.define-image-metadata.outputs.labels }}
           oci: false
-
-      # Workaround bug where capital letters in your GitHub username make it impossible to push to GHCR.
-      # https://github.com/macbre/push-to-ghcr/issues/12
-      - name: Lowercase Registry
-        id: registry_case
-        uses: ASzc/change-string-case-action@v6
-        with:
-          string: ${{ env.IMAGE_REGISTRY }}
 
       # Push the image to GHCR (Image Registry)
       - name: Push To GHCR
@@ -148,7 +153,7 @@ jobs:
         with:
           image: ${{ steps.build_image.outputs.image }}
           tags: ${{ steps.build_image.outputs.tags }}
-          registry: ${{ steps.registry_case.outputs.lowercase }}
+          registry: ${{ env.IMAGE_REGISTRY }}
           username: ${{ env.REGISTRY_USER }}
           password: ${{ env.REGISTRY_PASSWORD }}
           extra-args: |
@@ -169,7 +174,7 @@ jobs:
       - name: Sign container image
         if: github.event_name != 'pull_request'
         run: |
-          cosign sign -y --key env://COSIGN_PRIVATE_KEY ${{ steps.registry_case.outputs.lowercase }}/${{ steps.build_image.outputs.image }}@${TAGS}
+          cosign sign -y --key env://COSIGN_PRIVATE_KEY ${{ env.IMAGE_REGISTRY }}/${{ steps.build_image.outputs.image }}@${TAGS}
         env:
           TAGS: ${{ steps.push.outputs.digest }}
           COSIGN_EXPERIMENTAL: false

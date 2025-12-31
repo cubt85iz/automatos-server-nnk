@@ -1,4 +1,10 @@
 {
+  "arguments": {
+    "CONFIG": "base",
+    "DEBUG": "true",
+    "NVIDIA_TAG": "",
+    "ROOT": "core"
+  },
   "containers": [
     "audiobookshelf",
     "gotify",

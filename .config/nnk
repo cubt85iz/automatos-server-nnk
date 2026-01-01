@@ -1,6 +1,6 @@
 {
   "arguments": {
-    "CONFIG": "base",
+    "CONFIG": "nnk",
     "DEBUG": "true",
     "NVIDIA_TAG": "",
     "ROOT": "core"
@@ -10,16 +10,16 @@
     "gotify",
     "homer",
     "jellyfin",
-    "kometa",
+    "kavita",
     "lubelogger",
     "mealie",
+    "navidrome",
     "opnsense-bkp",
-    "photoprism",
-    "pinchflat",
+    "paperless-ngx",
     "redmine",
     "smartermail",
     "syncthing",
-    "tautulli",
+    "uptime-kuma",
     "vikunja"
   ],
   "packages": [

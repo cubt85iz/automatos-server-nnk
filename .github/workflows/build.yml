@@ -2,7 +2,7 @@
 # Purpose: Automates the process of identifying the correct Fedora CoreOS version,
 #          comparing it against the 'stable' release, generating standardized
 #          image tags, preparing OCI-compliant metadata, and building the container.
-name: Build Fedora CoreOS for pow
+name: Build Fedora CoreOS for nnk
 
 on:
   push:

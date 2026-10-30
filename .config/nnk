@@ -8,6 +8,7 @@
   },
   "containers": [
     "audiobookshelf",
+    "frigate",
     "gotify",
     "homer",
     "jellyfin",
